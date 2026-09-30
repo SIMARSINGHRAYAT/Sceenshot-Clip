@@ -12,6 +12,7 @@ import {
   ZoomOut,
 } from "lucide-react";
 import {
+  type ChangeEvent,
   type CSSProperties,
   type MouseEvent as ReactMouseEvent,
   useCallback,
@@ -180,6 +181,7 @@ function DashboardPage({
   const navigate = useNavigate();
   const [dropActive, setDropActive] = useState(false);
   const [contextMenu, setContextMenu] = useState<{ x: number; y: number } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
   const screenshot = useEditorStore((s) => s.screenshot);
   const setScreenshot = useEditorStore((s) => s.setScreenshot);
   const clearScreenshot = useEditorStore((s) => s.clearScreenshot);
@@ -239,6 +241,17 @@ function DashboardPage({
     [addToast, prepareScreenshotFromFile]
   );
 
+  const handleFileSelection = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      if (file) {
+        await prepareScreenshotFromFile(file);
+      }
+      event.target.value = "";
+    },
+    [prepareScreenshotFromFile]
+  );
+
   useEffect(() => {
     const listener = (event: ClipboardEvent) => {
       void handlePasteEvent(event);
@@ -248,9 +261,19 @@ function DashboardPage({
   }, [handlePasteEvent]);
 
   useEffect(() => {
+    const handleGlobalClose = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setContextMenu(null);
+        setDropActive(false);
+      }
+    };
     const close = () => setContextMenu(null);
     window.addEventListener("click", close);
-    return () => window.removeEventListener("click", close);
+    window.addEventListener("keydown", handleGlobalClose);
+    return () => {
+      window.removeEventListener("click", close);
+      window.removeEventListener("keydown", handleGlobalClose);
+    };
   }, []);
 
   const handleManualPaste = async () => {
@@ -315,6 +338,13 @@ function DashboardPage({
 
         {!screenshot ? (
           <div className="relative mt-10 flex min-h-[70vh] items-center justify-center">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/jpg"
+              hidden
+              onChange={handleFileSelection}
+            />
             <div
               onDragOver={(event) => {
                 event.preventDefault();
@@ -329,11 +359,12 @@ function DashboardPage({
                   void prepareScreenshotFromFile(file);
                 }
               }}
+              onClick={() => fileInputRef.current?.click()}
               onContextMenu={(event) => {
                 event.preventDefault();
                 setContextMenu({ x: event.clientX, y: event.clientY });
               }}
-              className={`glass-panel relative flex h-[56vh] w-full max-w-4xl flex-col items-center justify-center rounded-3xl border p-8 text-center transition-all ${
+              className={`glass-panel relative flex h-[56vh] w-full max-w-4xl cursor-pointer flex-col items-center justify-center rounded-3xl border p-8 text-center transition-all ${
                 dropActive
                   ? "border-cyan-400/70 shadow-[0_0_40px_rgba(34,211,238,0.23)]"
                   : "border-zinc-500/40"
@@ -341,7 +372,29 @@ function DashboardPage({
             >
               <h2 className="chrome-title text-5xl font-semibold tracking-tight">Ctrl + V</h2>
               <p className="mt-4 text-xl font-semibold text-zinc-200">Paste your screenshot</p>
-              <p className="mt-1 text-sm text-zinc-400">or right-click and choose Paste</p>
+              <p className="mt-1 text-sm text-zinc-400">or drag, drop, or click to upload</p>
+              <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    fileInputRef.current?.click();
+                  }}
+                  className="action-button"
+                >
+                  Choose Screenshot
+                </button>
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    void handleManualPaste();
+                  }}
+                  className="action-button-secondary"
+                >
+                  Paste from Clipboard
+                </button>
+              </div>
               {dropActive ? (
                 <div className="mt-6 rounded-lg border border-cyan-400/60 bg-black/50 px-4 py-2 text-sm font-semibold text-cyan-200">
                   Drop Screenshot Here
@@ -452,6 +505,7 @@ function EditorPage({
   const workspaceRef = useRef<HTMLDivElement | null>(null);
   const baseCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const annotationCanvasRef = useRef<HTMLCanvasElement | null>(null);
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const [activePanel, setActivePanel] = useState<"crop" | "edit" | "save">("crop");
   const [activeTool, setActiveTool] = useState<"marker" | "eraser">("marker");
@@ -933,6 +987,45 @@ function EditorPage({
     addToast("Editor reset to original screenshot.", "info");
   };
 
+  const handleImportScreenshot = useCallback(
+    async (file: File) => {
+      if (!ACCEPTED_IMAGE_MIMES.includes(file.type)) {
+        addToast("Unsupported file. Use PNG, JPG, JPEG, or WEBP.", "error");
+        return;
+      }
+
+      try {
+        const dataUrl = await loadFileAsDataUrl(file);
+        const image = await dataUrlToImage(dataUrl);
+        const nextAsset: ScreenshotAsset = {
+          id: crypto.randomUUID(),
+          dataUrl,
+          mimeType: file.type,
+          width: image.naturalWidth,
+          height: image.naturalHeight,
+          size: file.size,
+          name: file.name || `${getDefaultFilename()}.${extensionFromMime(file.type)}`,
+        };
+        setScreenshot(nextAsset);
+        addToast("Screenshot replaced successfully.", "success");
+      } catch {
+        addToast("Unable to load the selected screenshot.", "error");
+      }
+    },
+    [addToast, setScreenshot]
+  );
+
+  const onFileSelected = useCallback(
+    async (event: ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      if (file) {
+        await handleImportScreenshot(file);
+      }
+      event.target.value = "";
+    },
+    [handleImportScreenshot]
+  );
+
   const saveOutput = async (): Promise<boolean> => {
     const composite = composeCurrentCanvas();
     if (!composite) {
@@ -1050,6 +1143,20 @@ function EditorPage({
           </button>
           <h1 className="chrome-title text-lg font-semibold">{screenshot.name || APP_TITLE}</h1>
           <div className="flex items-center gap-2">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept="image/png,image/jpeg,image/webp,image/jpg"
+              hidden
+              onChange={onFileSelected}
+            />
+            <button
+              onClick={() => fileInputRef.current?.click()}
+              className="icon-button text-xs"
+              title="Open another screenshot"
+            >
+              Open Image
+            </button>
             <button
               onClick={() => {
                 if (!unsavedChanges || window.confirm("Start a new screenshot and discard current edits?")) {
